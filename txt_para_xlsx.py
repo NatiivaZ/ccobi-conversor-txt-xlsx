@@ -1,14 +1,10 @@
 # -*- coding: utf-8 -*-
-"""
-Automação: converte arquivos TXT REGATI/PEFIN em XLSX com colunas selecionadas e formatadas.
-Planilha: 6 colunas — Número do auto, Data de inscrição, Data da ocorrência, Data exclusão, Valor inscrito, CPF/CNPJ.
+"""Conversor principal de TXT REGATI/PEFIN para XLSX.
 
-Uso:
-  python txt_para_xlsx.py                          -> abre a interface para escolher o TXT e converter
-  python txt_para_xlsx.py "C:\pasta\arquivo.TXT"   -> converte o arquivo informado (linha de comando)
+Pode rodar pela interface ou direto pela linha de comando, mas a lógica de
+conversão fica concentrada aqui.
 """
 
-import re
 import sys
 import threading
 from datetime import datetime
@@ -18,190 +14,27 @@ from tkinter.scrolledtext import ScrolledText
 from tkinter import ttk
 
 import xlsxwriter
-
-# Nomes das colunas no cabeçalho do TXT (para detectar índices)
-NOME_DOC_PRINCIPAL = "DOC PRINCIPAL 1"
-NOME_VALOR = "VALOR"
-NOME_CONTRATO = "CONTRATO"
-NOME_DT_INCLUSAO = "DT INCLUSAO"
-NOME_DT_OCORRENCIA = "DT OCORRENCIA"
-NOME_DT_EXCLUSAO = "DT EXCLUSAO"
-NOME_HR_INCLUSAO = "HR INCLUSAO"
-NOME_USER_INCLUSAO = "USER INCLUSAO"
-
-
-def achar_indices_colunas(header: str, sep: str = ";"):
-    """Obtém os índices das colunas pelo nome do cabeçalho (evita troca de colunas)."""
-    colunas = [c.strip() for c in header.split(sep)]
-    indices = {}
-    for i, nome in enumerate(colunas):
-        if nome == NOME_DOC_PRINCIPAL:
-            indices["doc"] = i
-        elif nome == NOME_VALOR:
-            indices["valor"] = i
-        elif nome == NOME_CONTRATO:
-            indices["contrato"] = i
-        elif nome == NOME_DT_INCLUSAO:
-            indices["dt_inclusao"] = i
-        elif nome == NOME_DT_OCORRENCIA:
-            indices["dt_ocorrencia"] = i
-        elif nome == NOME_DT_EXCLUSAO:
-            indices["dt_exclusao"] = i
-        elif nome == NOME_HR_INCLUSAO:
-            indices["hr_inclusao"] = i
-        elif nome == NOME_USER_INCLUSAO:
-            indices["user_inclusao"] = i
-    return indices, colunas
-
-
-def _validar_cpf(digits: str) -> bool:
-    """
-    Valida CPF pelos dígitos verificadores (algoritmo módulo 11 - Receita Federal).
-    digits: string com exatamente 11 dígitos.
-    """
-    if len(digits) != 11 or not digits.isdigit():
-        return False
-    if digits == digits[0] * 11:  # rejeita 111.111.111-11 etc.
-        return False
-    # Primeiro dígito verificador: pesos 10,9,8,7,6,5,4,3,2 nos 9 primeiros
-    s = sum(int(digits[i]) * (10 - i) for i in range(9))
-    d1 = 0 if (s % 11) < 2 else 11 - (s % 11)
-    if int(digits[9]) != d1:
-        return False
-    # Segundo dígito: pesos 11,10,...,2 nos 10 primeiros
-    s2 = sum(int(digits[i]) * (11 - i) for i in range(10))
-    d2 = 0 if (s2 % 11) < 2 else 11 - (s2 % 11)
-    return int(digits[10]) == d2
-
-
-def _validar_cnpj(digits: str) -> bool:
-    """
-    Valida CNPJ pelos dígitos verificadores (algoritmo módulo 11 - Receita Federal).
-    digits: string com exatamente 14 dígitos.
-    """
-    if len(digits) != 14 or not digits.isdigit():
-        return False
-    # Pesos para o primeiro dígito (12 primeiros): 5,4,3,2,9,8,7,6,5,4,3,2
-    pesos1 = (5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2)
-    s1 = sum(int(digits[i]) * pesos1[i] for i in range(12))
-    d1 = 0 if (s1 % 11) < 2 else 11 - (s1 % 11)
-    if int(digits[12]) != d1:
-        return False
-    # Pesos para o segundo (13 primeiros): 6,5,4,3,2,9,8,7,6,5,4,3,2
-    pesos2 = (6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2)
-    s2 = sum(int(digits[i]) * pesos2[i] for i in range(13))
-    d2 = 0 if (s2 % 11) < 2 else 11 - (s2 % 11)
-    return int(digits[13]) == d2
-
-
-def formatar_cpf_cnpj(val: str) -> str:
-    """
-    Formata como CPF ou CNPJ conforme validação pelos dígitos verificadores (Receita Federal).
-    Só formata como CPF se os 11 dígitos (ou os 11 últimos, quando há zeros à esquerda) forem
-    válidos; só formata como CNPJ se os 14 dígitos forem válidos. Evita trocar CPF por CNPJ
-    e vice-versa. Sem API e sem internet.
-    """
-    if not val:
-        return ""
-    digits = re.sub(r"\D", "", val.strip())
-    if len(digits) == 11:
-        if _validar_cpf(digits):
-            return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}"
-        return val.strip()
-    if len(digits) == 12:
-        d11 = digits[-11:]
-        if _validar_cpf(d11):
-            return f"{d11[:3]}.{d11[3:6]}.{d11[6:9]}-{d11[9:]}"
-        return val.strip()
-    if len(digits) == 13:
-        d11 = digits[-11:]
-        if _validar_cpf(d11):
-            return f"{d11[:3]}.{d11[3:6]}.{d11[6:9]}-{d11[9:]}"
-        return val.strip()
-    if len(digits) >= 14:
-        d14 = digits[-14:] if len(digits) > 14 else digits
-        if _validar_cnpj(d14):
-            return f"{d14[:2]}.{d14[2:5]}.{d14[5:8]}/{d14[8:12]}-{d14[12:]}"
-        # 14 dígitos mas CNPJ inválido: pode ser 00+CPF
-        d11 = d14[-11:]
-        if _validar_cpf(d11):
-            return f"{d11[:3]}.{d11[3:6]}.{d11[6:9]}-{d11[9:]}"
-        return val.strip()
-    return val.strip()
-
-
-def parse_data_ddmmaaaa(val: str):
-    """Converte DDMMAAAA para objeto date. Retorna None se inválido."""
-    if not val or len(val.strip()) < 8:
-        return None
-    s = re.sub(r"\D", "", val.strip())[:8]
-    if len(s) != 8:
-        return None
-    try:
-        d, m, a = int(s[:2]), int(s[2:4]), int(s[4:8])
-        if 1 <= d <= 31 and 1 <= m <= 12 and 1900 <= a <= 2100:
-            return datetime(a, m, d).date()
-    except ValueError:
-        pass
-    return None
-
-
-def formatar_hora_como_texto(val: str) -> str:
-    """
-    Converte HHMM ou HHMMSS do TXT em texto HH:MM ou HH:MM:SS para o Excel.
-    Gravando como texto evita ######## e garante exibição correta.
-    """
-    if not val:
-        return ""
-    s = re.sub(r"\D", "", val.strip())
-    if len(s) == 4:
-        try:
-            h, m = int(s[:2]), int(s[2:4])
-            if 0 <= h <= 23 and 0 <= m <= 59:
-                return f"{h:02d}:{m:02d}"
-        except ValueError:
-            pass
-    if len(s) >= 6:
-        try:
-            h, m, sec = int(s[:2]), int(s[2:4]), int(s[4:6])
-            if 0 <= h <= 23 and 0 <= m <= 59 and 0 <= sec <= 59:
-                return f"{h:02d}:{m:02d}:{sec:02d}"
-        except ValueError:
-            pass
-    return val.strip()
-
-
-def valor_centavos_para_reais(val: str):
-    """Converte string em centavos para float em reais. Retorna None se inválido."""
-    if not val:
-        return None
-    s = re.sub(r"\D", "", val.strip())
-    if not s:
-        return None
-    try:
-        return int(s) / 100.0
-    except ValueError:
-        return None
-
-
-def _nome_planilha_com_data_hora(arquivo_txt: Path) -> Path:
-    """Gera nome da planilha: nome do TXT + data e hora da conversão (não sobrescreve)."""
-    agora = datetime.now()
-    nome = f"{arquivo_txt.stem}_{agora:%Y%m%d}_{agora:%H%M%S}.xlsx"
-    return arquivo_txt.parent / nome
+from txt_utils import (
+    achar_indices_colunas,
+    formatar_cpf_cnpj,
+    formatar_hora_como_texto,
+    nome_planilha_com_data_hora,
+    parse_data_ddmmaaaa,
+    valor_centavos_para_reais,
+)
 
 
 def converter_txt_para_xlsx(arquivo_txt: Path, arquivo_xlsx: Path = None, log_callback=None) -> Path:
-    """
-    Converte um TXT REGATI/PEFIN em XLSX com 6 colunas formatadas.
-    Se arquivo_xlsx não for informado, gera novo arquivo: nome_do_txt_AAAAMMDD_HHMMSS.xlsx.
-    log_callback(msg): opcional, chamado para exibir mensagens (ex.: na interface).
+    """Converte o TXT em XLSX.
+
+    Se o destino não vier informado, cria um nome novo com data e hora para não
+    sobrescrever uma conversão anterior.
     """
     arquivo_txt = Path(arquivo_txt).resolve()
     if not arquivo_txt.exists():
         raise FileNotFoundError(f"Arquivo não encontrado: {arquivo_txt}")
     if arquivo_xlsx is None:
-        arquivo_xlsx = _nome_planilha_com_data_hora(arquivo_txt)
+        arquivo_xlsx = nome_planilha_com_data_hora(arquivo_txt)
     else:
         arquivo_xlsx = Path(arquivo_xlsx).resolve()
 
@@ -242,7 +75,7 @@ def converter_txt_para_xlsx(arquivo_txt: Path, arquivo_xlsx: Path = None, log_ca
     fmt_data = workbook.add_format({"num_format": "dd/mm/yyyy", "align": "center"})
     fmt_texto = workbook.add_format({"align": "left"})
 
-    # Ordem e nomes na planilha: Número do auto → Data de inscrição → Data da ocorrência → Data exclusão → Valor inscrito → CPF/CNPJ
+    # Essa é a ordem final da planilha exportada.
     headers_xlsx = [
         "Número do auto",
         "Data de inscrição",
@@ -278,38 +111,38 @@ def converter_txt_para_xlsx(arquivo_txt: Path, arquivo_xlsx: Path = None, log_ca
             dt_ocor = parts[idx_dt_ocorrencia].strip() if idx_dt_ocorrencia < len(parts) else ""
             dt_excl = parts[idx_dt_exclusao].strip() if idx_dt_exclusao < len(parts) else ""
 
-            # 1. Número do auto (Contrato)
+            # Número do auto.
             sheet.write_string(row_excel, 0, contrato, fmt_texto)
 
-            # 2. Data de inscrição (DT INCLUSAO)
+            # Data de inscrição.
             dt = parse_data_ddmmaaaa(dt_inc)
             if dt:
                 sheet.write_datetime(row_excel, 1, datetime.combine(dt, datetime.min.time()), fmt_data)
             else:
                 sheet.write_string(row_excel, 1, dt_inc or "", fmt_texto)
 
-            # 3. Data da ocorrência (DT OCORRENCIA)
+            # Data da ocorrência.
             dt_oc = parse_data_ddmmaaaa(dt_ocor)
             if dt_oc:
                 sheet.write_datetime(row_excel, 2, datetime.combine(dt_oc, datetime.min.time()), fmt_data)
             else:
                 sheet.write_string(row_excel, 2, dt_ocor or "", fmt_texto)
 
-            # 4. Data exclusão (DT EXCLUSAO) — formato data (dd/mm/aaaa)
+            # Data de exclusão.
             dt_ex = parse_data_ddmmaaaa(dt_excl)
             if dt_ex:
                 sheet.write_datetime(row_excel, 3, datetime.combine(dt_ex, datetime.min.time()), fmt_data)
             else:
                 sheet.write_string(row_excel, 3, dt_excl or "", fmt_texto)
 
-            # 5. Valor inscrito (centavos -> reais)
+            # Valor inscrito.
             v = valor_centavos_para_reais(val)
             if v is not None:
                 sheet.write_number(row_excel, 4, v, fmt_moeda)
             else:
                 sheet.write_string(row_excel, 4, val or "", fmt_texto)
 
-            # 6. CPF/CNPJ (Documento principal)
+            # Documento principal.
             sheet.write_string(row_excel, 5, formatar_cpf_cnpj(doc), fmt_texto)
 
             row_excel += 1
@@ -330,7 +163,7 @@ def converter_txt_para_xlsx(arquivo_txt: Path, arquivo_xlsx: Path = None, log_ca
     return arquivo_xlsx
 
 
-# Cores e estilo da interface (tema claro profissional)
+# Paleta e estilo da interface.
 _COR_FUNDO = "#f1f5f9"
 _COR_CARD = "#ffffff"
 _COR_TITULO = "#0f172a"
@@ -343,7 +176,7 @@ _COR_SUCESSO = "#059669"
 
 
 def _rodar_interface():
-    """Abre a interface gráfica para escolher o TXT e converter."""
+    """Abre a interface gráfica do conversor."""
     try:
         root = Tk()
     except Exception as e:
@@ -355,7 +188,7 @@ def _rodar_interface():
     root.resizable(True, True)
     root.configure(bg=_COR_FUNDO)
 
-    # Estilos ttk
+    # Estilos dos botões principais.
     style = ttk.Style()
     style.configure(
         "Primario.TButton",
@@ -375,7 +208,7 @@ def _rodar_interface():
     pasta_inicial = Path(__file__).resolve().parent
     arquivo_selecionado = [None]
 
-    # ---- Cabeçalho (altura fixa para o subtítulo não ser cortado) ----
+    # Cabeçalho da janela.
     frm_header = Frame(root, bg=_COR_CARD, highlightthickness=0)
     frm_header.pack(fill=X, side="top")
     lbl_titulo = Label(
@@ -396,7 +229,7 @@ def _rodar_interface():
     )
     lbl_sub.pack(anchor="w", padx=24, pady=(0, 20))
 
-    # ---- Card: Arquivo ----
+    # Bloco do arquivo selecionado.
     frm_arquivo = Frame(root, bg=_COR_CARD, padx=20, pady=16, highlightbackground=_COR_BORDA, highlightthickness=1)
     frm_arquivo.pack(fill=X, padx=20, pady=(8, 10))
 
@@ -426,7 +259,7 @@ def _rodar_interface():
     )
     btn_sel.pack(anchor="w")
 
-    # ---- Card: Log (área que expande ao redimensionar) ----
+    # Área de log e andamento da conversão.
     frm_log = Frame(root, bg=_COR_CARD, padx=20, pady=14, highlightbackground=_COR_BORDA, highlightthickness=1)
     frm_log.pack(fill=BOTH, expand=True, padx=20, pady=(0, 8))
 
@@ -452,7 +285,7 @@ def _rodar_interface():
     )
     txt_log.pack(fill=BOTH, expand=True, pady=(8, 0))
 
-    # ---- Barra de botões (espaço fixo, não aperta ao redimensionar) ----
+    # Barra de ações da parte de baixo.
     frm_btns = Frame(root, bg=_COR_FUNDO, pady=16, padx=20)
     frm_btns.pack(fill=X, side="bottom")
 
@@ -517,8 +350,8 @@ def _rodar_interface():
                 )
                 root.after(0, lambda: _concluido(True, None))
             except BaseException as e:
-                # SystemExit (ex.: coluna não encontrada) não é Exception;
-                # sem capturar, a GUI ficava travada com botões desabilitados
+                # Alguns erros passam como BaseException. Se não capturar aqui,
+                # a interface pode ficar travada com os botões desabilitados.
                 err_msg = str(e)
                 root.after(0, lambda: _concluido(False, err_msg))
 
@@ -550,7 +383,7 @@ def main():
     try:
         pasta = Path(__file__).resolve().parent
         if len(sys.argv) >= 2:
-            # Linha de comando: converte o arquivo informado (nome com data/hora)
+            # Com argumento, roda direto pela linha de comando.
             arquivo_txt = Path(sys.argv[1]).resolve()
             if not arquivo_txt.is_absolute():
                 arquivo_txt = (pasta / sys.argv[1]).resolve()
@@ -563,7 +396,7 @@ def main():
                 arquivo_xlsx = pasta / sys.argv[2]
             converter_txt_para_xlsx(arquivo_txt, arquivo_xlsx)
         else:
-            # Sem argumentos: abre a interface para escolher o TXT
+            # Sem argumento, abre a interface normal.
             _rodar_interface()
     except Exception as e:
         msg = str(e)
